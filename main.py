@@ -40,7 +40,7 @@ def fetch_json(url: str, retries: int = 3, delay: float = 1.5) -> Optional[Any]:
             time.sleep(delay)
     return None
 
-def evaluate_pair(pair: Dict[str, Any], min_liquidity: float) -> Optional[Dict[str, Any]]:
+def evaluate_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     token = pair.get("baseToken", {})
     sym = token.get("symbol", "UNKNOWN")
     addr = token.get("address", "")
@@ -55,7 +55,19 @@ def evaluate_pair(pair: Dict[str, Any], min_liquidity: float) -> Optional[Dict[s
     fdv = float(pair.get("fdv") or 0)
     price_usd = float(pair.get("priceUsd") or 0)
     
-    if liq_usd < min_liquidity:
+    # Dynamic liquidity threshold based on chain risk profile
+    min_liq = config.MIN_LIQUIDITY_SOLANA_USD if chain == "solana" else config.MIN_LIQUIDITY_USD
+    if liq_usd < min_liq:
+        return None
+        
+    price_chg = pair.get("priceChange") or {}
+    chg_1h = float(price_chg.get("h1") or 0)
+    chg_5m = float(price_chg.get("m5") or 0)
+    
+    # FILTER 1: REJECT IN-FLIGHT TOPS / CLIMAX PUMPS
+    if chg_1h > config.MAX_ALLOWED_1H_CHANGE_PCT:
+        return None
+    if chg_5m > config.MAX_ALLOWED_5M_CHANGE_PCT:
         return None
         
     vol = pair.get("volume") or {}
@@ -73,10 +85,6 @@ def evaluate_pair(pair: Dict[str, Any], min_liquidity: float) -> Optional[Dict[s
     total_tx_1h = buys_1h + sells_1h
     
     buy_ratio = (buys_1h / total_tx_1h) if total_tx_1h > 0 else 0.5
-    
-    price_chg = pair.get("priceChange") or {}
-    chg_1h = float(price_chg.get("h1") or 0)
-    
     liq_fdv_ratio = (liq_usd / fdv * 100) if fdv > 0 else 0.0
     
     signals = []
@@ -98,19 +106,16 @@ def evaluate_pair(pair: Dict[str, Any], min_liquidity: float) -> Optional[Dict[s
         signals.append(f"Net Buys ({buy_ratio*100:.0f}% Buys)")
         score += 15
         
-    # Marker 3: Pre-Breakout Consolidation vs In-Flight
-    if 0.5 <= chg_1h <= 20.0:
-        signals.append(f"Pre-Breakout Base ({chg_1h:+.1f}% 1h)")
-        score += 20
-    elif -2.0 <= chg_1h < 0.5:
-        signals.append(f"Tight Price Compression ({chg_1h:+.1f}% 1h)")
+    # Marker 3: Pre-Breakout Consolidation Base
+    if -1.5 <= chg_1h <= 10.0:
+        signals.append(f"Ideal Accumulation Base ({chg_1h:+.1f}% 1h)")
+        score += 25
+    elif 10.0 < chg_1h <= config.MAX_ALLOWED_1H_CHANGE_PCT:
+        signals.append(f"Early Breakout ({chg_1h:+.1f}% 1h)")
         score += 15
-    elif chg_1h > 20.0:
-        signals.append(f"In-Flight Spike (+{chg_1h:.1f}% 1h - Risk of Top)")
-        score += 5
         
     # Marker 4: Springboard Float
-    if 1.0 <= liq_fdv_ratio <= 15.0:
+    if 1.0 <= liq_fdv_ratio <= 18.0:
         signals.append(f"Tight Float (L/FDV: {liq_fdv_ratio:.1f}%)")
         score += 10
         
@@ -136,19 +141,16 @@ def evaluate_pair(pair: Dict[str, Any], min_liquidity: float) -> Optional[Dict[s
 
 class DexPumpScanner:
     def __init__(self):
-        self.alert_history: Dict[str, float] = {} # token_address -> timestamp
+        self.alert_history: Dict[str, float] = {}
         
     def get_candidate_tokens(self) -> List[str]:
         candidates = set()
-        
-        # 1. DexScreener Token Boosts (active discovery)
         boosts = fetch_json("https://api.dexscreener.com/token-boosts/latest/v1") or []
         for b in boosts:
             addr = b.get("tokenAddress")
             if addr:
                 candidates.add(addr)
                 
-        # 2. DexScreener Latest Token Profiles
         profiles = fetch_json("https://api.dexscreener.com/token-profiles/latest/v1") or []
         for p in profiles:
             addr = p.get("tokenAddress")
@@ -163,7 +165,6 @@ class DexPumpScanner:
         
         now = time.time()
         for token_addr in candidates:
-            # Check cooldown
             last_alerted = self.alert_history.get(token_addr, 0)
             if now - last_alerted < config.ALERT_COOLDOWN_MINUTES * 60:
                 continue
@@ -173,18 +174,16 @@ class DexPumpScanner:
                 time.sleep(0.2)
                 continue
                 
-            # Pick highest liquidity pair
             pairs = sorted(data["pairs"], key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0), reverse=True)
             best_pair = pairs[0]
             
-            evaluation = evaluate_pair(best_pair, min_liquidity=config.MIN_LIQUIDITY_USD)
+            evaluation = evaluate_pair(best_pair)
             if evaluation and evaluation["score"] >= config.MIN_SCORE_ALERT:
                 logger.info(
-                    f"🔥 PRE-PUMP SIGNAL: {evaluation['symbol']} ({evaluation['chain']}) "
-                    f"[Score: {evaluation['score']}/100] Vol Surge: {evaluation['vol_surge_ratio']}x"
+                    f"🔥 PRE-BREAKOUT ALERT: {evaluation['symbol']} ({evaluation['chain']}) "
+                    f"[Score: {evaluation['score']}/100] Vol: {evaluation['vol_surge_ratio']}x | 1h Chg: {evaluation['chg_1h']:+.1f}%"
                 )
                 
-                # Send Telegram alert
                 sent = send_telegram_alert(
                     bot_token=config.TELEGRAM_BOT_TOKEN,
                     chat_id=config.TELEGRAM_CHAT_ID,
@@ -196,9 +195,10 @@ class DexPumpScanner:
             time.sleep(0.25)
 
     def run_forever(self):
-        logger.info("🚀 DEX Pre-Pump Scanner Started.")
+        logger.info("🚀 Hardened DEX Pre-Breakout Scanner Active.")
         logger.info(f"Target Chains: {config.TARGET_CHAINS or 'ALL'}")
-        logger.info(f"Min Liquidity: ${config.MIN_LIQUIDITY_USD:,.0f} | Min Score: {config.MIN_SCORE_ALERT}")
+        logger.info(f"Min Liquidity: EVM ${config.MIN_LIQUIDITY_USD:,.0f} | Solana ${config.MIN_LIQUIDITY_SOLANA_USD:,.0f}")
+        logger.info(f"Max 1h Chg Allowed: +{config.MAX_ALLOWED_1H_CHANGE_PCT}%")
         
         while True:
             try:

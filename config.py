@@ -7,13 +7,18 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# Scanner Thresholds
+# Base Scanner Thresholds
 MIN_LIQUIDITY_USD = float(os.getenv("MIN_LIQUIDITY_USD", "10000.0"))
+MIN_LIQUIDITY_SOLANA_USD = float(os.getenv("MIN_LIQUIDITY_SOLANA_USD", "25000.0"))
 MIN_SCORE_ALERT = int(os.getenv("MIN_SCORE_ALERT", "60"))
-VOL_SURGE_THRESHOLD = float(os.getenv("VOL_SURGE_THRESHOLD", "3.0"))
-BUY_RATIO_THRESHOLD = float(os.getenv("BUY_RATIO_THRESHOLD", "0.68"))
+VOL_SURGE_THRESHOLD = float(os.getenv("VOL_SURGE_THRESHOLD", "2.5"))
+BUY_RATIO_THRESHOLD = float(os.getenv("BUY_RATIO_THRESHOLD", "0.65"))
 
-# Supported / Target Chains (leave empty to scan ALL chains)
+# Maximum allowed price expansion to prevent chasing in-flight tops
+MAX_ALLOWED_1H_CHANGE_PCT = float(os.getenv("MAX_ALLOWED_1H_CHANGE_PCT", "25.0"))
+MAX_ALLOWED_5M_CHANGE_PCT = float(os.getenv("MAX_ALLOWED_5M_CHANGE_PCT", "15.0"))
+
+# Target Chains (leave empty to scan ALL chains)
 TARGET_CHAINS = [c.strip().lower() for c in os.getenv("TARGET_CHAINS", "solana,robinhood,base,bsc,ethereum").split(",") if c.strip()]
 
 # Poll interval in seconds
