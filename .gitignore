@@ -4,3 +4,12 @@ __pycache__/
 venv/
 .idea/
 .vscode/
+
+# Temporary data files & caches
+*.log
+candles_cache.json
+live_pairs.json
+parsed_alerts.json
+doubler_alerts.json
+doublers.json
+trajectories.json
